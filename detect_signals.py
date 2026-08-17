@@ -17,22 +17,23 @@ MAX_MARGIN = 0.10
 MIN_ODDS = 1.30
 MAX_ODDS = 4.00
 
-# Archivo de memoria para no repetir señales
+# Archivos de memoria
 STATE_FILE = Path("sent_signals.json")
+BOT_STATE_FILE = Path("bot_state.json")
 DEDUP_HOURS = 6
 
 
-def load_sent_signals():
-    if not STATE_FILE.exists():
-        return {}
+def load_json_file(path, default):
+    if not path.exists():
+        return default
     try:
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return {}
+        return default
 
 
-def save_sent_signals(state):
-    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+def save_json_file(path, data):
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def no_vig_probs(odds_list):
@@ -48,12 +49,6 @@ def market_margin(odds_list):
 
 
 def extract_event_data(event):
-    """
-    Extrae datos para h2h y totals.
-    Devuelve:
-        h2h_data: {book: {odds, margin, no_vig}}
-        totals_data: {point: {book: {odds, margin, no_vig}}}
-    """
     h2h_data = {}
     totals_data = {}
 
@@ -63,7 +58,6 @@ def extract_event_data(event):
         for mkt in bm.get("markets", []):
             market_key = mkt.get("key")
 
-            # --- Mercado h2h ---
             if market_key == "h2h":
                 outcomes = mkt.get("outcomes", [])
                 if len(outcomes) < 2:
@@ -84,31 +78,24 @@ def extract_event_data(event):
                 no_vig = no_vig_probs(odds_list)
                 no_vig_map = {name: prob for name, prob in zip(odds_map.keys(), no_vig)}
 
-                h2h_data[book_name] = {
-                    "odds": odds_map,
-                    "margin": margin,
-                    "no_vig": no_vig_map,
-                }
+                h2h_data[book_name] = {"odds": odds_map, "margin": margin, "no_vig": no_vig_map}
 
-            # --- Mercado totals ---
             elif market_key == "totals":
                 outcomes = mkt.get("outcomes", [])
                 if len(outcomes) < 2:
                     continue
 
-                # Extraer todas las líneas (points) disponibles en esta casa
                 points = set()
                 for o in outcomes:
                     if o.get("point") is not None:
                         points.add(float(o["point"]))
 
-                # Para cada línea, calcular cuotas y probabilidades
                 for point in points:
                     odds_map = {}
                     for o in outcomes:
                         if o.get("point") is None or float(o["point"]) != point:
                             continue
-                        name = o.get("name")  # "Over" o "Under"
+                        name = o.get("name")
                         price = o.get("price")
                         if name and price and float(price) > 1.0:
                             odds_map[name] = float(price)
@@ -124,20 +111,12 @@ def extract_event_data(event):
                     if point not in totals_data:
                         totals_data[point] = {}
 
-                    totals_data[point][book_name] = {
-                        "odds": odds_map,
-                        "margin": margin,
-                        "no_vig": no_vig_map,
-                    }
+                    totals_data[point][book_name] = {"odds": odds_map, "margin": margin, "no_vig": no_vig_map}
 
     return h2h_data, totals_data
 
 
 def detect_signals_for_market(books_data, min_books):
-    """
-    Detecta señales para un mercado dado.
-    books_data: {book: {odds, margin, no_vig}}
-    """
     if len(books_data) < min_books:
         return []
 
@@ -163,71 +142,47 @@ def detect_signals_for_market(books_data, min_books):
             continue
 
         consensus_prob = statistics.median(probs)
-
-        if len(probs) > 1:
-            dispersion = statistics.pstdev(probs)
-        else:
-            dispersion = 0.0
-
+        dispersion = statistics.pstdev(probs) if len(probs) > 1 else 0.0
         dispersion = max(dispersion, 0.005)
 
         for book_name, book_prob in zip(
-            [b for b, _ in sorted(zip(outcome_odds[outcome].keys(), probs))],
-            sorted(probs)
+            [b for b, _ in sorted(zip(outcome_odds[outcome].keys(), probs))], sorted(probs)
         ):
             odd = outcome_odds[outcome].get(book_name)
             margin = outcome_margins[outcome].get(book_name)
 
             if odd is None or margin is None:
                 continue
-
-            if margin > MAX_MARGIN:
-                continue
-            if odd < MIN_ODDS or odd > MAX_ODDS:
+            if margin > MAX_MARGIN or odd < MIN_ODDS or odd > MAX_ODDS:
                 continue
 
             edge = consensus_prob - book_prob
             ev = consensus_prob * odd - 1.0
             z_score = edge / dispersion
 
-            if edge < MIN_EDGE:
-                continue
-            if ev < MIN_EV:
-                continue
-            if z_score < MIN_Z:
+            if edge < MIN_EDGE or ev < MIN_EV or z_score < MIN_Z:
                 continue
 
             signals.append({
-                "book": book_name,
-                "outcome": outcome,
-                "odd": odd,
-                "book_prob": book_prob,
-                "consensus_prob": consensus_prob,
-                "edge": edge,
-                "ev": ev,
-                "z_score": z_score,
-                "margin": margin,
-                "books_count": len(probs),
+                "book": book_name, "outcome": outcome, "odd": odd,
+                "book_prob": book_prob, "consensus_prob": consensus_prob,
+                "edge": edge, "ev": ev, "z_score": z_score,
+                "margin": margin, "books_count": len(probs),
             })
 
     return signals
 
 
 def detect_all_signals(event):
-    """
-    Detecta señales para todos los mercados de un evento.
-    """
     h2h_data, totals_data = extract_event_data(event)
     all_signals = []
 
-    # Señales h2h
     h2h_signals = detect_signals_for_market(h2h_data, MIN_BOOKS)
     for s in h2h_signals:
         s["market"] = "Ganador"
         s["line"] = ""
     all_signals.extend(h2h_signals)
 
-    # Señales totals (por cada línea)
     for point, books_data in totals_data.items():
         totals_signals = detect_signals_for_market(books_data, MIN_BOOKS)
         for s in totals_signals:
@@ -239,9 +194,6 @@ def detect_all_signals(event):
 
 
 def format_signal_message(s, index):
-    """
-    Formatea una señal como texto para Telegram.
-    """
     if s["market"] == "Totales":
         market_line = f"Mercado: {s['market']}\nLínea: {s['line']}"
         selection = s["outcome"]
@@ -282,6 +234,65 @@ def send_telegram_message(token, chat_id, text):
         return False
 
 
+def process_telegram_commands(token, chat_id, bot_state):
+    """
+    Lee los mensajes recientes de Telegram y procesa comandos.
+    """
+    url = f"https://api.telegram.org/bot{token}/getUpdates"
+    try:
+        response = requests.get(url, params={"timeout": 10}, timeout=15)
+        if not response.ok:
+            return bot_state
+        updates = response.json().get("result", [])
+    except Exception as e:
+        print(f"Error leyendo Telegram: {e}")
+        return bot_state
+
+    commands_found = []
+    max_update_id = -1
+
+    for update in updates:
+        update_id = update.get("update_id", 0)
+        if update_id > max_update_id:
+            max_update_id = update_id
+
+        message = update.get("message")
+        if not message:
+            continue
+
+        from_chat = str(message.get("chat", {}).get("id", ""))
+        text = message.get("text", "")
+
+        # Solo procesar mensajes de nuestro chat_id que empiecen con /
+        if from_chat == str(chat_id) and text.startswith("/"):
+            # Limpiar el comando (quitar @nombrebot si lo hay)
+            clean_cmd = text.split()[0].split('@')[0].lower()
+            commands_found.append(clean_cmd)
+
+    # Ejecutar el último comando encontrado
+    if commands_found:
+        last_command = commands_found[-1]
+
+        if last_command == "/stop":
+            bot_state["paused"] = True
+            send_telegram_message(token, chat_id, "🔴 Bot PAUSADO.\nNo se gastarán créditos de la API hasta que envíes /start.")
+        elif last_command == "/start":
+            bot_state["paused"] = False
+            send_telegram_message(token, chat_id, "🟢 Bot REACTIVADO.\nVolveré a escanear cuotas en la próxima ejecución.")
+        elif last_command == "/status":
+            status_text = "🔴 PAUSADO" if bot_state.get("paused") else "🟢 ACTIVO"
+            send_telegram_message(token, chat_id, f"Estado actual del bot: {status_text}")
+
+    # Confirmar a Telegram que hemos leído los mensajes para que no los vuelva a enviar
+    if max_update_id > -1:
+        try:
+            requests.get(url, params={"offset": max_update_id + 1}, timeout=10)
+        except Exception:
+            pass
+
+    return bot_state
+
+
 def main():
     api_key = os.getenv("ODDS_API_KEY")
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -291,12 +302,24 @@ def main():
         print("ERROR: Faltan variables de entorno.")
         sys.exit(1)
 
-    # Cargar memoria
-    sent_state = load_sent_signals()
+    # 1. Cargar estado del bot
+    bot_state = load_json_file(BOT_STATE_FILE, {"paused": False})
+
+    # 2. Procesar comandos de Telegram
+    bot_state = process_telegram_commands(telegram_token, telegram_chat_id, bot_state)
+    save_json_file(BOT_STATE_FILE, bot_state)
+
+    # 3. Comprobar si está pausado
+    if bot_state.get("paused"):
+        print("El bot está pausado por comando de Telegram (/stop).")
+        print("No se llamará a The Odds API para no gastar créditos.")
+        return
+
+    # 4. Cargar memoria de señales enviadas
+    sent_state = load_json_file(STATE_FILE, {})
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(hours=DEDUP_HOURS)
 
-    # Limpiar memoria antigua
     sent_state = {
         k: v for k, v in sent_state.items()
         if datetime.fromisoformat(v) > cutoff
@@ -343,16 +366,14 @@ def main():
 
     if not all_signals:
         print("No hay señales.")
-        save_sent_signals(sent_state)
+        save_json_file(STATE_FILE, sent_state)
         return
 
     all_signals.sort(key=lambda s: s["ev"], reverse=True)
-
     print(f"Señales detectadas: {len(all_signals)}")
 
     sent_count = 0
     for i, s in enumerate(all_signals[:3], start=1):
-        # ID único incluyendo mercado y línea
         if s["market"] == "Totales":
             signal_id = f"{s['sport_key']}|{s['home_team']}|{s['away_team']}|{s['market']}|{s['line']}|{s['book']}"
         else:
@@ -371,7 +392,7 @@ def main():
             print(f"Error enviando señal {i}.")
 
     print(f"Enviadas {sent_count} señales nuevas.")
-    save_sent_signals(sent_state)
+    save_json_file(STATE_FILE, sent_state)
 
 
 if __name__ == "__main__":
