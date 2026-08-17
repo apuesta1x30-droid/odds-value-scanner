@@ -135,6 +135,7 @@ def detect_signals(event):
         dispersion = max(dispersion, 0.005)  # Evitar división por cero
 
         # Comparamos cada casa contra el consenso
+        # Necesitamos iterar sobre cada casa individualmente
         for book_name, book_prob in zip(
             [b for b, _ in sorted(zip(outcome_odds[outcome].keys(), probs))],
             sorted(probs)
@@ -187,50 +188,65 @@ def main():
         print("ERROR: Falta la variable ODDS_API_KEY")
         sys.exit(1)
 
-    sport_key = "soccer_epl"
-
-    url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds"
-
-    params = {
-        "apiKey": api_key,
-        "regions": "eu",
-        "markets": "h2h",
-        "oddsFormat": "decimal",
-    }
-
-    print(f"Escaneando cuotas para: {sport_key}")
-    print("-" * 60)
-
-    response = requests.get(url, params=params, timeout=30)
-
-    if not response.ok:
-        print(f"ERROR en la API. Status: {response.status_code}")
-        print("Respuesta:", response.text)
-        sys.exit(1)
-
-    events = response.json()
-
-    if not events:
-        print("No hay eventos disponibles en este momento.")
-        sys.exit(0)
-
-    print(f"Eventos recibidos: {len(events)}")
-    print("-" * 60)
+    # Lista de ligas a escanear
+    sport_keys = [
+        "soccer_epl",
+        "soccer_spain_la_liga",
+        "soccer_uefa_champions_league",
+        "soccer_italy_serie_a",
+    ]
 
     all_signals = []
+    total_events = 0
 
-    for event in events:
-        home_team = event.get("home_team", "?")
-        away_team = event.get("away_team", "?")
-        commence_time = event.get("commence_time", "?")
+    for sport_key in sport_keys:
+        url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds"
 
-        event_signals = detect_signals(event)
+        params = {
+            "apiKey": api_key,
+            "regions": "eu",
+            "markets": "h2h",
+            "oddsFormat": "decimal",
+        }
 
-        for s in event_signals:
-            s["home_team"] = home_team
-            s["away_team"] = away_team
-            s["commence_time"] = commence_time
-            all_signals.append(s)
+        print(f"Escaneando: {sport_key}")
+        print("-" * 60)
+
+        try:
+            response = requests.get(url, params=params, timeout=30)
+
+            if not response.ok:
+                print(f"  ERROR en la API. Status: {response.status_code}")
+                continue
+
+            events = response.json()
+
+            if not events:
+                print("  No hay eventos disponibles.")
+                continue
+
+            print(f"  Eventos recibidos: {len(events)}")
+            total_events += len(events)
+
+            for event in events:
+                home_team = event.get("home_team", "?")
+                away_team = event.get("away_team", "?")
+                commence_time = event.get("commence_time", "?")
+
+                event_signals = detect_signals(event)
+
+                for s in event_signals:
+                    s["home_team"] = home_team
+                    s["away_team"] = away_team
+                    s["commence_time"] = commence_time
+                    s["sport_key"] = sport_key
+                    all_signals.append(s)
+
+        except Exception as e:
+            print(f"  Error al escanear {sport_key}: {e}")
+
+    print("=" * 60)
+    print(f"Total de eventos escaneados: {total_events}")
 
     if not all_signals:
         print("No se detectaron cuotas mal colocadas en este escaneo.")
@@ -245,6 +261,7 @@ def main():
     # Mostramos las 3 mejores
     for i, s in enumerate(all_signals[:3], start=1):
         print(f"\n🎯 SEÑAL {i}")
+        print(f"Liga:         {s['sport_key']}")
         print(f"Evento:       {s['home_team']} vs {s['away_team']}")
         print(f"Fecha:        {s['commence_time']}")
         print(f"Selección:    {s['outcome']}")
