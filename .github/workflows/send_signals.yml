@@ -21,11 +21,13 @@ jobs:
         with:
           python-version: "3.12"
           cache: "pip"
-
+          
       - name: Restore state cache
         uses: actions/cache@v4
         with:
-          path: sent_signals.json
+          path: |
+            sent_signals.json
+            bot_state.json
           key: signals-state-${{ github.run_id }}
           restore-keys: |
             signals-state-
