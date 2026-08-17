@@ -2,12 +2,15 @@ name: Send Signals to Telegram
 
 on:
   schedule:
-    - cron: "0 * * * *"  # Se ejecuta cada hora en punto
-  workflow_dispatch:      # Permite ejecutarlo manualmente
+    - cron: "0 * * * *"
+  workflow_dispatch:
 
 jobs:
   send:
     runs-on: ubuntu-latest
+    
+    # Este "if" es el interruptor: si SCANNER_PAUSED es true, el job no se ejecuta.
+    if: vars.SCANNER_PAUSED != 'true'
 
     steps:
       - name: Checkout repository
