@@ -192,7 +192,8 @@ def main():
     sport_keys = [
         "soccer_epl",
         "soccer_spain_la_liga",
-        "soccer_uefa_champions_league",
+        "soccer_germany_bundesliga",
+        "soccer_france_ligue_one",
         "soccer_italy_serie_a",
     ]
 
