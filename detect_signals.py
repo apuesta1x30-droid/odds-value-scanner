@@ -19,7 +19,7 @@ MAX_ODDS = 4.00
 
 # Archivo de memoria para no repetir señales
 STATE_FILE = Path("sent_signals.json")
-DEDUP_HOURS = 6  # No repetir la misma señal en 6 horas
+DEDUP_HOURS = 6
 
 
 def load_sent_signals():
@@ -48,84 +48,215 @@ def market_margin(odds_list):
 
 
 def extract_event_data(event):
-    books_data = {}
+    """
+    Extrae datos para h2h y totals.
+    Devuelve:
+        h2h_data: {book: {odds, margin, no_vig}}
+        totals_data: {point: {book: {odds, margin, no_vig}}}
+    """
+    h2h_data = {}
+    totals_data = {}
+
     for bm in event.get("bookmakers", []):
         book_name = bm.get("title", bm.get("key", "Desconocida"))
+
         for mkt in bm.get("markets", []):
-            if mkt.get("key") != "h2h":
-                continue
-            outcomes = mkt.get("outcomes", [])
-            if len(outcomes) < 2:
-                continue
-            odds_map = {}
-            for o in outcomes:
-                name = o.get("name")
-                price = o.get("price")
-                if name and price and float(price) > 1.0:
-                    odds_map[name] = float(price)
-            if len(odds_map) < 2:
-                continue
-            odds_list = list(odds_map.values())
-            margin = market_margin(odds_list)
-            no_vig = no_vig_probs(odds_list)
-            no_vig_map = {name: prob for name, prob in zip(odds_map.keys(), no_vig)}
-            books_data[book_name] = {"odds": odds_map, "margin": margin, "no_vig": no_vig_map}
-            break
-    return books_data
+            market_key = mkt.get("key")
+
+            # --- Mercado h2h ---
+            if market_key == "h2h":
+                outcomes = mkt.get("outcomes", [])
+                if len(outcomes) < 2:
+                    continue
+
+                odds_map = {}
+                for o in outcomes:
+                    name = o.get("name")
+                    price = o.get("price")
+                    if name and price and float(price) > 1.0:
+                        odds_map[name] = float(price)
+
+                if len(odds_map) < 2:
+                    continue
+
+                odds_list = list(odds_map.values())
+                margin = market_margin(odds_list)
+                no_vig = no_vig_probs(odds_list)
+                no_vig_map = {name: prob for name, prob in zip(odds_map.keys(), no_vig)}
+
+                h2h_data[book_name] = {
+                    "odds": odds_map,
+                    "margin": margin,
+                    "no_vig": no_vig_map,
+                }
+
+            # --- Mercado totals ---
+            elif market_key == "totals":
+                outcomes = mkt.get("outcomes", [])
+                if len(outcomes) < 2:
+                    continue
+
+                # Extraer todas las líneas (points) disponibles en esta casa
+                points = set()
+                for o in outcomes:
+                    if o.get("point") is not None:
+                        points.add(float(o["point"]))
+
+                # Para cada línea, calcular cuotas y probabilidades
+                for point in points:
+                    odds_map = {}
+                    for o in outcomes:
+                        if o.get("point") is None or float(o["point"]) != point:
+                            continue
+                        name = o.get("name")  # "Over" o "Under"
+                        price = o.get("price")
+                        if name and price and float(price) > 1.0:
+                            odds_map[name] = float(price)
+
+                    if len(odds_map) < 2:
+                        continue
+
+                    odds_list = list(odds_map.values())
+                    margin = market_margin(odds_list)
+                    no_vig = no_vig_probs(odds_list)
+                    no_vig_map = {name: prob for name, prob in zip(odds_map.keys(), no_vig)}
+
+                    if point not in totals_data:
+                        totals_data[point] = {}
+
+                    totals_data[point][book_name] = {
+                        "odds": odds_map,
+                        "margin": margin,
+                        "no_vig": no_vig_map,
+                    }
+
+    return h2h_data, totals_data
 
 
-def detect_signals(event):
-    books_data = extract_event_data(event)
-    if len(books_data) < MIN_BOOKS:
+def detect_signals_for_market(books_data, min_books):
+    """
+    Detecta señales para un mercado dado.
+    books_data: {book: {odds, margin, no_vig}}
+    """
+    if len(books_data) < min_books:
         return []
-    outcome_probs, outcome_odds, outcome_margins = {}, {}, {}
+
+    outcome_probs = {}
+    outcome_odds = {}
+    outcome_margins = {}
+
     for book_name, data in books_data.items():
         for outcome, prob in data["no_vig"].items():
             if outcome not in outcome_probs:
                 outcome_probs[outcome] = []
                 outcome_odds[outcome] = {}
                 outcome_margins[outcome] = {}
+
             outcome_probs[outcome].append(prob)
             outcome_odds[outcome][book_name] = data["odds"][outcome]
             outcome_margins[outcome][book_name] = data["margin"]
+
     signals = []
+
     for outcome, probs in outcome_probs.items():
-        if len(probs) < MIN_BOOKS:
+        if len(probs) < min_books:
             continue
+
         consensus_prob = statistics.median(probs)
-        dispersion = statistics.pstdev(probs) if len(probs) > 1 else 0.0
+
+        if len(probs) > 1:
+            dispersion = statistics.pstdev(probs)
+        else:
+            dispersion = 0.0
+
         dispersion = max(dispersion, 0.005)
+
         for book_name, book_prob in zip(
-            [b for b, _ in sorted(zip(outcome_odds[outcome].keys(), probs))], sorted(probs)
+            [b for b, _ in sorted(zip(outcome_odds[outcome].keys(), probs))],
+            sorted(probs)
         ):
             odd = outcome_odds[outcome].get(book_name)
             margin = outcome_margins[outcome].get(book_name)
+
             if odd is None or margin is None:
                 continue
-            if margin > MAX_MARGIN or odd < MIN_ODDS or odd > MAX_ODDS:
+
+            if margin > MAX_MARGIN:
                 continue
+            if odd < MIN_ODDS or odd > MAX_ODDS:
+                continue
+
             edge = consensus_prob - book_prob
             ev = consensus_prob * odd - 1.0
             z_score = edge / dispersion
-            if edge < MIN_EDGE or ev < MIN_EV or z_score < MIN_Z:
+
+            if edge < MIN_EDGE:
                 continue
+            if ev < MIN_EV:
+                continue
+            if z_score < MIN_Z:
+                continue
+
             signals.append({
-                "book": book_name, "outcome": outcome, "odd": odd,
-                "book_prob": book_prob, "consensus_prob": consensus_prob,
-                "edge": edge, "ev": ev, "z_score": z_score,
-                "margin": margin, "books_count": len(probs),
+                "book": book_name,
+                "outcome": outcome,
+                "odd": odd,
+                "book_prob": book_prob,
+                "consensus_prob": consensus_prob,
+                "edge": edge,
+                "ev": ev,
+                "z_score": z_score,
+                "margin": margin,
+                "books_count": len(probs),
             })
+
     return signals
 
 
+def detect_all_signals(event):
+    """
+    Detecta señales para todos los mercados de un evento.
+    """
+    h2h_data, totals_data = extract_event_data(event)
+    all_signals = []
+
+    # Señales h2h
+    h2h_signals = detect_signals_for_market(h2h_data, MIN_BOOKS)
+    for s in h2h_signals:
+        s["market"] = "Ganador"
+        s["line"] = ""
+    all_signals.extend(h2h_signals)
+
+    # Señales totals (por cada línea)
+    for point, books_data in totals_data.items():
+        totals_signals = detect_signals_for_market(books_data, MIN_BOOKS)
+        for s in totals_signals:
+            s["market"] = "Totales"
+            s["line"] = f"{s['outcome']} {point}"
+        all_signals.extend(totals_signals)
+
+    return all_signals
+
+
 def format_signal_message(s, index):
+    """
+    Formatea una señal como texto para Telegram.
+    """
+    if s["market"] == "Totales":
+        market_line = f"Mercado: {s['market']}\nLínea: {s['line']}"
+        selection = s["outcome"]
+    else:
+        market_line = f"Mercado: {s['market']}"
+        selection = s["outcome"]
+
     return f"""🎯 SEÑAL {index}
 
 Liga: {s['sport_key']}
 Evento: {s['home_team']} vs {s['away_team']}
 Fecha: {s['commence_time']}
+{market_line}
 
-Selección: {s['outcome']}
+Selección: {selection}
 Casa: {s['book']}
 Cuota: {s['odd']:.2f}
 
@@ -165,9 +296,9 @@ def main():
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(hours=DEDUP_HOURS)
 
-    # Limpiar memoria antigua (mayor a 6 horas)
+    # Limpiar memoria antigua
     sent_state = {
-        k: v for k, v in sent_state.items() 
+        k: v for k, v in sent_state.items()
         if datetime.fromisoformat(v) > cutoff
     }
 
@@ -181,26 +312,32 @@ def main():
 
     for sport_key in sport_keys:
         url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds"
-        params = {"apiKey": api_key, "regions": "eu", "markets": "h2h", "oddsFormat": "decimal"}
+        params = {
+            "apiKey": api_key,
+            "regions": "eu",
+            "markets": "h2h,totals",
+            "oddsFormat": "decimal",
+        }
         print(f"Escaneando: {sport_key}")
         try:
             response = requests.get(url, params=params, timeout=30)
             if not response.ok:
+                print(f"  ERROR: {response.status_code}")
                 continue
             events = response.json()
             if not events:
                 continue
             total_events += len(events)
             for event in events:
-                event_signals = detect_signals(event)
+                event_signals = detect_all_signals(event)
                 for s in event_signals:
                     s["home_team"] = event.get("home_team", "?")
                     s["away_team"] = event.get("away_team", "?")
                     s["commence_time"] = event.get("commence_time", "?")
                     s["sport_key"] = sport_key
                     all_signals.append(s)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  Error: {e}")
 
     print(f"Total eventos: {total_events}")
 
@@ -211,14 +348,18 @@ def main():
 
     all_signals.sort(key=lambda s: s["ev"], reverse=True)
 
+    print(f"Señales detectadas: {len(all_signals)}")
+
     sent_count = 0
     for i, s in enumerate(all_signals[:3], start=1):
-        # Crear ID único para esta señal
-        signal_id = f"{s['sport_key']}|{s['home_team']}|{s['away_team']}|{s['outcome']}|{s['book']}"
-        
-        # Comprobar si ya la enviamos en las últimas 6 horas
+        # ID único incluyendo mercado y línea
+        if s["market"] == "Totales":
+            signal_id = f"{s['sport_key']}|{s['home_team']}|{s['away_team']}|{s['market']}|{s['line']}|{s['book']}"
+        else:
+            signal_id = f"{s['sport_key']}|{s['home_team']}|{s['away_team']}|{s['market']}|{s['outcome']}|{s['book']}"
+
         if signal_id in sent_state:
-            print(f"Señal {i} ignorada (ya enviada recientemente): {signal_id}")
+            print(f"Señal {i} ignorada (ya enviada): {signal_id}")
             continue
 
         message = format_signal_message(s, i)
