@@ -19,8 +19,6 @@ MAX_ODDS = 4.00        # Cuota máxima
 def no_vig_probs(odds_list):
     """
     Convierte cuotas en probabilidades sin margen.
-    odds_list: [2.10, 3.40, 3.60]
-    Devuelve: [0.454, 0.281, 0.265]
     """
     inverse_sum = sum(1.0 / odds for odds in odds_list)
     if inverse_sum == 0:
@@ -31,7 +29,6 @@ def no_vig_probs(odds_list):
 def market_margin(odds_list):
     """
     Calcula el margen de la casa.
-    Si la suma de probabilidades implícitas es 1.05, margen es 0.05 = 5%.
     """
     inverse_sum = sum(1.0 / odds for odds in odds_list)
     return inverse_sum - 1.0
@@ -40,14 +37,6 @@ def market_margin(odds_list):
 def extract_event_data(event):
     """
     Extrae por cada casa: cuotas, márgenes y probabilidades sin margen.
-    Devuelve un diccionario con la estructura:
-        {
-            book_name: {
-                "odds": {outcome: odd},
-                "margin": float,
-                "no_vig": {outcome: prob},
-            }
-        }
     """
     books_data = {}
 
@@ -93,18 +82,15 @@ def extract_event_data(event):
 def detect_signals(event):
     """
     Detecta cuotas mal colocadas en un evento.
-    Devuelve una lista de señales candidatas.
     """
     books_data = extract_event_data(event)
 
     if len(books_data) < MIN_BOOKS:
         return []
 
-    # Agrupamos por outcome todas las probabilidades sin margen
-    # y las cuotas correspondientes.
-    outcome_probs = {}   # outcome -> lista de probabilidades
-    outcome_odds = {}    # outcome -> {book: odd}
-    outcome_margins = {} # outcome -> {book: margin}
+    outcome_probs = {}
+    outcome_odds = {}
+    outcome_margins = {}
 
     for book_name, data in books_data.items():
         for outcome, prob in data["no_vig"].items():
@@ -123,31 +109,25 @@ def detect_signals(event):
         if len(probs) < MIN_BOOKS:
             continue
 
-        # Probabilidad de consenso (mediana)
         consensus_prob = statistics.median(probs)
 
-        # Dispersión (desviación estándar)
         if len(probs) > 1:
             dispersion = statistics.pstdev(probs)
         else:
             dispersion = 0.0
 
-        dispersion = max(dispersion, 0.005)  # Evitar división por cero
+        dispersion = max(dispersion, 0.005)
 
-        # Comparamos cada casa contra el consenso
-        # Necesitamos iterar sobre cada casa individualmente
         for book_name, book_prob in zip(
             [b for b, _ in sorted(zip(outcome_odds[outcome].keys(), probs))],
             sorted(probs)
         ):
-            # Obtenemos cuota y margen de esta casa para esta selección
             odd = outcome_odds[outcome].get(book_name)
             margin = outcome_margins[outcome].get(book_name)
 
             if odd is None or margin is None:
                 continue
 
-            # Filtros básicos
             if margin > MAX_MARGIN:
                 continue
             if odd < MIN_ODDS or odd > MAX_ODDS:
@@ -164,7 +144,6 @@ def detect_signals(event):
             if z_score < MIN_Z:
                 continue
 
-            # Señal válida
             signals.append({
                 "book": book_name,
                 "outcome": outcome,
@@ -181,11 +160,63 @@ def detect_signals(event):
     return signals
 
 
+def format_signal_message(s, index):
+    """
+    Formatea una señal como texto para Telegram.
+    """
+    return f"""🎯 SEÑAL {index}
+
+Liga: {s['sport_key']}
+Evento: {s['home_team']} vs {s['away_team']}
+Fecha: {s['commence_time']}
+
+Selección: {s['outcome']}
+Casa: {s['book']}
+Cuota: {s['odd']:.2f}
+
+Prob. casa (sin margen): {s['book_prob']:.2%}
+Prob. consenso: {s['consensus_prob']:.2%}
+Edge: {s['edge']:+.2%}
+EV teórico: {s['ev']:+.2%}
+Z-score: {s['z_score']:.2f}
+Margen casa: {s['margin']:.2%}
+Casas comparadas: {s['books_count']}
+
+⚠️ Señal estadística. No garantiza resultados."""
+
+
+def send_telegram_message(token, chat_id, text):
+    """
+    Envía un mensaje a Telegram.
+    Devuelve True si se envió correctamente.
+    """
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "disable_web_page_preview": True,
+    }
+
+    try:
+        response = requests.post(url, json=payload, timeout=30)
+        return response.ok
+    except Exception as e:
+        print(f"Error enviando mensaje a Telegram: {e}")
+        return False
+
+
 def main():
     api_key = os.getenv("ODDS_API_KEY")
+    telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
     if not api_key:
         print("ERROR: Falta la variable ODDS_API_KEY")
+        sys.exit(1)
+
+    if not telegram_token or not telegram_chat_id:
+        print("ERROR: Faltan las variables de Telegram")
         sys.exit(1)
 
     # Lista de ligas a escanear
@@ -251,6 +282,7 @@ def main():
 
     if not all_signals:
         print("No se detectaron cuotas mal colocadas en este escaneo.")
+        print("No se enviará ningún mensaje a Telegram.")
         return
 
     # Ordenamos por EV (mayor primero)
@@ -259,23 +291,18 @@ def main():
     print(f"Señales detectadas: {len(all_signals)}")
     print("=" * 60)
 
-    # Mostramos las 3 mejores
+    # Enviamos las 3 mejores señales a Telegram
     for i, s in enumerate(all_signals[:3], start=1):
-        print(f"\n🎯 SEÑAL {i}")
-        print(f"Liga:         {s['sport_key']}")
-        print(f"Evento:       {s['home_team']} vs {s['away_team']}")
-        print(f"Fecha:        {s['commence_time']}")
-        print(f"Selección:    {s['outcome']}")
-        print(f"Casa:         {s['book']}")
-        print(f"Cuota:        {s['odd']:.2f}")
-        print("-" * 60)
-        print(f"Prob. casa (sin margen): {s['book_prob']:.2%}")
-        print(f"Prob. consenso:          {s['consensus_prob']:.2%}")
-        print(f"Edge:                    {s['edge']:+.2%}")
-        print(f"EV teórico:              {s['ev']:+.2%}")
-        print(f"Z-score:                 {s['z_score']:.2f}")
-        print(f"Margen casa:             {s['margin']:.2%}")
-        print(f"Casas comparadas:        {s['books_count']}")
+        message = format_signal_message(s, i)
+        success = send_telegram_message(telegram_token, telegram_chat_id, message)
+
+        if success:
+            print(f"Señal {i} enviada a Telegram.")
+        else:
+            print(f"Error al enviar señal {i} a Telegram.")
+
+    print("=" * 60)
+    print("Proceso completado.")
 
 
 if __name__ == "__main__":
