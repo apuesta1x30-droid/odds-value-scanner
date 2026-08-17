@@ -1,7 +1,9 @@
 name: Send Signals to Telegram
 
 on:
-  workflow_dispatch:
+  schedule:
+    - cron: "0 * * * *"  # Se ejecuta cada hora en punto
+  workflow_dispatch:      # Permite ejecutarlo manualmente
 
 jobs:
   send:
@@ -17,6 +19,14 @@ jobs:
           python-version: "3.12"
           cache: "pip"
 
+      - name: Restore state cache
+        uses: actions/cache@v4
+        with:
+          path: sent_signals.json
+          key: signals-state-${{ github.run_id }}
+          restore-keys: |
+            signals-state-
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -29,3 +39,10 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python detect_signals.py
+
+      - name: Save state cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: sent_signals.json
+          key: signals-state-${{ github.run_id }}
