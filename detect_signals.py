@@ -193,16 +193,90 @@ def detect_all_signals(event):
 
     return all_signals
 
+def format_date_spanish(utc_date_str):
+    """Convierte fecha UTC a hora española."""
+    try:
+        dt = datetime.fromisoformat(utc_date_str.replace("Z", "+00:00"))
+        madrid_tz = ZoneInfo("Europe/Madrid")
+        dt_local = dt.astimezone(madrid_tz)
+        return dt_local.strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        return utc_date_str
+
+
+def get_edge_icon(edge):
+    if edge >= 0.15:
+        return "🔥🔥🔥"
+    elif edge >= 0.10:
+        return "🔥🔥"
+    else:
+        return "🔥"
+
+
+def get_ev_icon(ev):
+    if ev >= 0.30:
+        return "💰💰💰"
+    elif ev >= 0.15:
+        return "💰💰"
+    else:
+        return "💰"
+
+
+def get_zscore_icon(z):
+    if z >= 3.0:
+        return "⭐⭐⭐"
+    elif z >= 2.5:
+        return "⭐⭐"
+    else:
+        return "⭐"
+
+
+def get_margin_icon(margin):
+    if margin <= 0.05:
+        return "✅"
+    elif margin <= 0.08:
+        return "⚠️"
+    else:
+        return "🔴"
 
 def format_signal_message(s, index):
+    """
+    Formatea una señal como texto para Telegram.
+    """
+    fecha_local = format_date_spanish(s['commence_time'])
+    edge_icon = get_edge_icon(s['edge'])
+    ev_icon = get_ev_icon(s['ev'])
+    z_icon = get_zscore_icon(s['z_score'])
+    margin_icon = get_margin_icon(s['margin'])
+
     if s["market"] == "Totales":
-        market_line = f"Mercado: {s['market']}\nLínea: {s['line']}"
+        market_line = f"📈 Mercado: {s['market']}\n📏 Línea: {s['line']}"
         selection = s["outcome"]
     else:
-        market_line = f"Mercado: {s['market']}"
+        market_line = f"📈 Mercado: {s['market']}"
         selection = s["outcome"]
 
     return f"""🎯 SEÑAL {index}
+
+📅 Fecha: {fecha_local}
+⚽ Liga: {s['sport_key']}
+🏟️ Evento: {s['home_team']} vs {s['away_team']}
+{market_line}
+
+🎯 Selección: {selection}
+🏦 Casa: {s['book']}
+💶 Cuota: {s['odd']:.2f}
+
+📊 Prob. casa (sin margen): {s['book_prob']:.2%}
+📊 Prob. consenso: {s['consensus_prob']:.2%}
+
+{edge_icon} Edge: {s['edge']:+.2%}
+{ev_icon} EV teórico: {s['ev']:+.2%}
+{z_icon} Z-score: {s['z_score']:.2f}
+{margin_icon} Margen casa: {s['margin']:.2%}
+👥 Casas comparadas: {s['books_count']}
+
+⚠️ Señal estadística. No garantiza resultados."""
 
 Liga: {s['sport_key']}
 Evento: {s['home_team']} vs {s['away_team']}
