@@ -250,52 +250,35 @@ def format_signal_message(s, index):
     margin_icon = get_margin_icon(s['margin'])
 
     if s["market"] == "Totales":
-        market_line = f"📈 Mercado: {s['market']}\n📏 Línea: {s['line']}"
+        market_line = f"Mercado: {s['market']}\nLinea: {s['line']}"
         selection = s["outcome"]
     else:
-        market_line = f"📈 Mercado: {s['market']}"
+        market_line = f"Mercado: {s['market']}"
         selection = s["outcome"]
 
-    return f"""🎯 SEÑAL {index}
-
-📅 Fecha: {fecha_local}
-⚽ Liga: {s['sport_key']}
-🏟️ Evento: {s['home_team']} vs {s['away_team']}
-{market_line}
-
-🎯 Selección: {selection}
-🏦 Casa: {s['book']}
-💶 Cuota: {s['odd']:.2f}
-
-📊 Prob. casa (sin margen): {s['book_prob']:.2%}
-📊 Prob. consenso: {s['consensus_prob']:.2%}
-
-{edge_icon} Edge: {s['edge']:+.2%}
-{ev_icon} EV teórico: {s['ev']:+.2%}
-{z_icon} Z-score: {s['z_score']:.2f}
-{margin_icon} Margen casa: {s['margin']:.2%}
-👥 Casas comparadas: {s['books_count']}
-
-⚠️ Señal estadística. No garantiza resultados."""
-
-Liga: {s['sport_key']}
-Evento: {s['home_team']} vs {s['away_team']}
-Fecha: {s['commence_time']}
-{market_line}
-
-Selección: {selection}
-Casa: {s['book']}
-Cuota: {s['odd']:.2f}
-
-Prob. casa (sin margen): {s['book_prob']:.2%}
-Prob. consenso: {s['consensus_prob']:.2%}
-Edge: {s['edge']:+.2%}
-EV teórico: {s['ev']:+.2%}
-Z-score: {s['z_score']:.2f}
-Margen casa: {s['margin']:.2%}
-Casas comparadas: {s['books_count']}
-
-⚠️ Señal estadística. No garantiza resultados."""
+    return (
+        f"SEÑAL {index}\n"
+        f"\n"
+        f"Fecha: {fecha_local}\n"
+        f"Liga: {s['sport_key']}\n"
+        f"Evento: {s['home_team']} vs {s['away_team']}\n"
+        f"{market_line}\n"
+        f"\n"
+        f"Seleccion: {selection}\n"
+        f"Casa: {s['book']}\n"
+        f"Cuota: {s['odd']:.2f}\n"
+        f"\n"
+        f"Prob. casa (sin margen): {s['book_prob']:.2%}\n"
+        f"Prob. consenso: {s['consensus_prob']:.2%}\n"
+        f"\n"
+        f"{edge_icon} Edge: {s['edge']:+.2%}\n"
+        f"{ev_icon} EV teorico: {s['ev']:+.2%}\n"
+        f"{z_icon} Z-score: {s['z_score']:.2f}\n"
+        f"{margin_icon} Margen casa: {s['margin']:.2%}\n"
+        f"Casas comparadas: {s['books_count']}\n"
+        f"\n"
+        f"Senal estadistica. No garantiza resultados."
+    )
 
 
 def send_telegram_message(token, chat_id, text):
