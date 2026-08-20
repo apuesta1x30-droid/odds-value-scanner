@@ -291,6 +291,29 @@ def send_telegram_message(token, chat_id, text):
         print(f"Error enviando a Telegram: {e}")
         return False
 
+def check_and_send_alive_message(token, chat_id):
+    """
+    Envia un mensaje de estado si la hora española
+    coincide con una de las tres ventanas: 06:00, 14:00, 22:00.
+    """
+    madrid_tz = ZoneInfo("Europe/Madrid")
+    now_local = datetime.now(madrid_tz)
+
+    # Horas a las que enviar el mensaje de estado
+    alive_hours = [6, 14, 22]
+
+    if now_local.hour in alive_hours:
+        msg = (
+            f"✅ Bot activo.\n"
+            f"Hora: {now_local.strftime('%d/%m/%Y %H:%M')} (Madrid)\n"
+            f"He escaneado las 5 ligas pero no he localizado "
+            f"cuotas desajustadas de momento.\n"
+            f"Seguiré vigilando."
+        )
+        send_telegram_message(token, chat_id, msg)
+        print("Mensaje de estado enviado.")
+    else:
+        print("No es hora de enviar mensaje de estado.")
 
 def process_telegram_commands(token, chat_id, bot_state):
     """
@@ -424,6 +447,7 @@ def main():
 
     if not all_signals:
         print("No hay señales.")
+        check_and_send_alive_message(telegram_token, telegram_chat_id)
         save_json_file(STATE_FILE, sent_state)
         return
 
