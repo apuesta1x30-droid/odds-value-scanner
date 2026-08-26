@@ -306,7 +306,7 @@ def check_and_send_alive_message(token, chat_id):
         msg = (
             f"✅ Bot activo.\n"
             f"Hora: {now_local.strftime('%d/%m/%Y %H:%M')} (Madrid)\n"
-            f"He escaneado las 5 ligas pero no he localizado "
+            f"He escaneado todas las ligas de fútbol disponibles "
             f"cuotas desajustadas de momento.\n"
             f"Seguiré vigilando."
         )
@@ -406,42 +406,58 @@ def main():
         if datetime.fromisoformat(v) > cutoff
     }
 
-    sport_keys = [
-        "soccer_epl", "soccer_spain_la_liga", "soccer_germany_bundesliga",
-        "soccer_france_ligue_one", "soccer_italy_serie_a",
-    ]
-
-    all_signals = []
+        all_signals = []
     total_events = 0
+    soccer_events = 0
 
-    for sport_key in sport_keys:
-        url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds"
-        params = {
-            "apiKey": api_key,
-            "regions": "eu",
-            "markets": "h2h,totals",
-            "oddsFormat": "decimal",
-        }
-        print(f"Escaneando: {sport_key}")
-        try:
-            response = requests.get(url, params=params, timeout=30)
-            if not response.ok:
-                print(f"  ERROR: {response.status_code}")
+    # Una sola llamada al endpoint "upcoming" (todos los deportes)
+    url = "https://api.the-odds-api.com/v4/sports/upcoming/odds"
+    params = {
+        "apiKey": api_key,
+        "regions": "eu",
+        "markets": "h2h,totals",
+        "oddsFormat": "decimal",
+    }
+    print("Escaneando todos los deportes (endpoint upcoming)...")
+    try:
+        response = requests.get(url, params=params, timeout=60)
+        if not response.ok:
+            print(f"ERROR: {response.status_code}")
+            print(response.text)
+            save_json_file(STATE_FILE, sent_state)
+            return
+
+        events = response.json()
+        if not events:
+            print("No hay eventos disponibles.")
+            check_and_send_alive_message(telegram_token, telegram_chat_id)
+            save_json_file(STATE_FILE, sent_state)
+            return
+
+        total_events = len(events)
+        print(f"Total eventos recibidos (todos los deportes): {total_events}")
+
+        # Filtrar solo eventos de fútbol
+        for event in events:
+            sport_key = event.get("sport_key", "")
+            if not sport_key.startswith("soccer_"):
                 continue
-            events = response.json()
-            if not events:
-                continue
-            total_events += len(events)
-            for event in events:
-                event_signals = detect_all_signals(event)
-                for s in event_signals:
-                    s["home_team"] = event.get("home_team", "?")
-                    s["away_team"] = event.get("away_team", "?")
-                    s["commence_time"] = event.get("commence_time", "?")
-                    s["sport_key"] = sport_key
-                    all_signals.append(s)
-        except Exception as e:
-            print(f"  Error: {e}")
+
+            soccer_events += 1
+            event_signals = detect_all_signals(event)
+            for s in event_signals:
+                s["home_team"] = event.get("home_team", "?")
+                s["away_team"] = event.get("away_team", "?")
+                s["commence_time"] = event.get("commence_time", "?")
+                s["sport_key"] = sport_key
+                all_signals.append(s)
+
+        print(f"Eventos de fútbol procesados: {soccer_events}")
+
+    except Exception as e:
+        print(f"Error: {e}")
+        save_json_file(STATE_FILE, sent_state)
+        return
 
     print(f"Total eventos: {total_events}")
 
