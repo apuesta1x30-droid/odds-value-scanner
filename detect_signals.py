@@ -1,3 +1,4 @@
+#usa la api key de the odds-api-key con apuesta1x30fashscore
 import json
 import os
 import statistics
