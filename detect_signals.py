@@ -121,24 +121,26 @@ def detect_signals_for_market(books_data, min_books):
     if len(books_data) < min_books:
         return []
 
-    outcome_probs = {}
+    outcome_book_probs = {}
     outcome_odds = {}
     outcome_margins = {}
 
     for book_name, data in books_data.items():
         for outcome, prob in data["no_vig"].items():
-            if outcome not in outcome_probs:
-                outcome_probs[outcome] = []
+            if outcome not in outcome_book_probs:
+                outcome_book_probs[outcome] = {}
                 outcome_odds[outcome] = {}
                 outcome_margins[outcome] = {}
 
-            outcome_probs[outcome].append(prob)
+            outcome_book_probs[outcome][book_name] = prob
             outcome_odds[outcome][book_name] = data["odds"][outcome]
             outcome_margins[outcome][book_name] = data["margin"]
 
     signals = []
 
-    for outcome, probs in outcome_probs.items():
+    for outcome, book_probs in outcome_book_probs.items():
+        probs = list(book_probs.values())
+
         if len(probs) < min_books:
             continue
 
@@ -146,9 +148,7 @@ def detect_signals_for_market(books_data, min_books):
         dispersion = statistics.pstdev(probs) if len(probs) > 1 else 0.0
         dispersion = max(dispersion, 0.005)
 
-        for book_name, book_prob in zip(
-            [b for b, _ in sorted(zip(outcome_odds[outcome].keys(), probs))], sorted(probs)
-        ):
+        for book_name, book_prob in book_probs.items():
             odd = outcome_odds[outcome].get(book_name)
             margin = outcome_margins[outcome].get(book_name)
 
@@ -193,8 +193,8 @@ def detect_all_signals(event):
 
     return all_signals
 
+
 def format_date_spanish(utc_date_str):
-    """Convierte fecha UTC a hora española."""
     try:
         dt = datetime.fromisoformat(utc_date_str.replace("Z", "+00:00"))
         madrid_tz = ZoneInfo("Europe/Madrid")
@@ -206,7 +206,7 @@ def format_date_spanish(utc_date_str):
 
 def get_edge_icon(edge):
     if edge >= 0.15:
-        return "🔥🔥🔥"
+        return "🔥🔥"
     elif edge >= 0.10:
         return "🔥🔥"
     else:
@@ -215,7 +215,7 @@ def get_edge_icon(edge):
 
 def get_ev_icon(ev):
     if ev >= 0.30:
-        return "💰💰💰"
+        return "💰💰"
     elif ev >= 0.15:
         return "💰💰"
     else:
@@ -239,10 +239,8 @@ def get_margin_icon(margin):
     else:
         return "🔴"
 
+
 def format_signal_message(s, index):
-    """
-    Formatea una señal como texto para Telegram.
-    """
     fecha_local = format_date_spanish(s['commence_time'])
     edge_icon = get_edge_icon(s['edge'])
     ev_icon = get_ev_icon(s['ev'])
@@ -259,25 +257,25 @@ def format_signal_message(s, index):
     return (
         f"SEÑAL {index}\n"
         f"\n"
-        f"📅 Fecha: {fecha_local}\n"
-        f"⚽ Liga: {s['sport_key']}\n"
-        f"🏟️ Evento: {s['home_team']} vs {s['away_team']}\n"
+        f"Fecha: {fecha_local}\n"
+        f"Liga: {s['sport_key']}\n"
+        f"Evento: {s['home_team']} vs {s['away_team']}\n"
         f"{market_line}\n"
         f"\n"
-        f"🎯 Seleccion: {selection}\n"
-        f"🏦 Casa: {s['book']}\n"
-        f"💶 Cuota: {s['odd']:.2f}\n"
+        f"Seleccion: {selection}\n"
+        f"Casa: {s['book']}\n"
+        f"Cuota: {s['odd']:.2f}\n"
         f"\n"
-        f"📊 Prob. casa (sin margen): {s['book_prob']:.2%}\n"
-        f"📊 Prob. consenso: {s['consensus_prob']:.2%}\n"
+        f"Prob. casa (sin margen): {s['book_prob']:.2%}\n"
+        f"Prob. consenso: {s['consensus_prob']:.2%}\n"
         f"\n"
         f"{edge_icon} Edge: {s['edge']:+.2%}\n"
         f"{ev_icon} EV teorico: {s['ev']:+.2%}\n"
         f"{z_icon} Z-score: {s['z_score']:.2f}\n"
         f"{margin_icon} Margen casa: {s['margin']:.2%}\n"
-        f"👥 Casas comparadas: {s['books_count']}\n"
+        f"Casas comparadas: {s['books_count']}\n"
         f"\n"
-        f"⚠️ Senal estadistica. No garantiza resultados."
+        f"Senal estadistica. No garantiza resultados."
     )
 
 
@@ -291,23 +289,19 @@ def send_telegram_message(token, chat_id, text):
         print(f"Error enviando a Telegram: {e}")
         return False
 
+
 def check_and_send_alive_message(token, chat_id):
-    """
-    Envia un mensaje de estado si la hora española
-    coincide con una de las tres ventanas: 06:00, 14:00, 22:00.
-    """
     madrid_tz = ZoneInfo("Europe/Madrid")
     now_local = datetime.now(madrid_tz)
 
-    # Horas a las que enviar el mensaje de estado
-    alive_hours = [6, 14, 22]
+    alive_hours = [6, 13, 20]
 
     if now_local.hour in alive_hours:
         msg = (
             f"✅ Bot activo.\n"
             f"Hora: {now_local.strftime('%d/%m/%Y %H:%M')} (Madrid)\n"
             f"He escaneado todas las ligas de fútbol disponibles "
-            f"cuotas desajustadas de momento.\n"
+            f"pero no he localizado cuotas desajustadas de momento.\n"
             f"Seguiré vigilando."
         )
         send_telegram_message(token, chat_id, msg)
@@ -315,10 +309,8 @@ def check_and_send_alive_message(token, chat_id):
     else:
         print("No es hora de enviar mensaje de estado.")
 
+
 def process_telegram_commands(token, chat_id, bot_state):
-    """
-    Lee los mensajes recientes de Telegram y procesa comandos.
-    """
     url = f"https://api.telegram.org/bot{token}/getUpdates"
     try:
         response = requests.get(url, params={"timeout": 10}, timeout=15)
@@ -344,13 +336,10 @@ def process_telegram_commands(token, chat_id, bot_state):
         from_chat = str(message.get("chat", {}).get("id", ""))
         text = message.get("text", "")
 
-        # Solo procesar mensajes de nuestro chat_id que empiecen con /
         if from_chat == str(chat_id) and text.startswith("/"):
-            # Limpiar el comando (quitar @nombrebot si lo hay)
             clean_cmd = text.split()[0].split('@')[0].lower()
             commands_found.append(clean_cmd)
 
-    # Ejecutar el último comando encontrado
     if commands_found:
         last_command = commands_found[-1]
 
@@ -364,7 +353,6 @@ def process_telegram_commands(token, chat_id, bot_state):
             status_text = "🔴 PAUSADO" if bot_state.get("paused") else "🟢 ACTIVO"
             send_telegram_message(token, chat_id, f"Estado actual del bot: {status_text}")
 
-    # Confirmar a Telegram que hemos leído los mensajes para que no los vuelva a enviar
     if max_update_id > -1:
         try:
             requests.get(url, params={"offset": max_update_id + 1}, timeout=10)
@@ -396,6 +384,13 @@ def main():
         print("No se llamará a The Odds API para no gastar créditos.")
         return
 
+    # 3.5 Comprobar horario de sueño (22:00 - 06:00 Madrid)
+    madrid_tz = ZoneInfo("Europe/Madrid")
+    now_local = datetime.now(madrid_tz)
+    if now_local.hour >= 22 or now_local.hour < 6:
+        print(f"Horario de sueño ({now_local.strftime('%H:%M')} Madrid). No se escanea.")
+        return
+
     # 4. Cargar memoria de señales enviadas
     sent_state = load_json_file(STATE_FILE, {})
     now = datetime.now(timezone.utc)
@@ -406,7 +401,7 @@ def main():
         if datetime.fromisoformat(v) > cutoff
     }
 
-        all_signals = []
+    all_signals = []
     total_events = 0
     soccer_events = 0
 
