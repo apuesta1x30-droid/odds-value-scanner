@@ -1,4 +1,3 @@
-#usa la api key de the odds-api-key con apuesta1x30fashscore
 import json
 import os
 import statistics
@@ -18,6 +17,8 @@ MIN_Z = 2.0
 MAX_MARGIN = 0.10
 MIN_ODDS = 1.30
 MAX_ODDS = 4.00
+MAX_EDGE = 0.20  # NUEVO: edge máximo 20% (por encima es sospechoso)
+MIN_MINUTES_BEFORE = 30  # NUEVO: mínimo 30 minutos antes del inicio
 
 # Archivos de memoria
 STATE_FILE = Path("sent_signals.json")
@@ -38,11 +39,16 @@ def save_json_file(path, data):
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def no_vig_probs(odds_list):
-    inverse_sum = sum(1.0 / odds for odds in odds_list)
+def no_vig_probs(odds_map):
+    """
+    Convierte cuotas en probabilidades sin margen.
+    odds_map: {"outcome": cuota, ...}
+    Devuelve: {"outcome": prob, ...}
+    """
+    inverse_sum = sum(1.0 / odds for odds in odds_map.values())
     if inverse_sum == 0:
-        return []
-    return [(1.0 / odds) / inverse_sum for odds in odds_list]
+        return {}
+    return {name: (1.0 / odds) / inverse_sum for name, odds in odds_map.items()}
 
 
 def market_margin(odds_list):
@@ -51,6 +57,9 @@ def market_margin(odds_list):
 
 
 def extract_event_data(event):
+    """
+    Extrae datos usando diccionarios por nombre (no por posición).
+    """
     h2h_data = {}
     totals_data = {}
 
@@ -77,16 +86,20 @@ def extract_event_data(event):
 
                 odds_list = list(odds_map.values())
                 margin = market_margin(odds_list)
-                no_vig = no_vig_probs(odds_list)
-                no_vig_map = {name: prob for name, prob in zip(odds_map.keys(), no_vig)}
+                no_vig_map = no_vig_probs(odds_map)
 
-                h2h_data[book_name] = {"odds": odds_map, "margin": margin, "no_vig": no_vig_map}
+                h2h_data[book_name] = {
+                    "odds": odds_map,
+                    "margin": margin,
+                    "no_vig": no_vig_map,
+                }
 
             elif market_key == "totals":
                 outcomes = mkt.get("outcomes", [])
                 if len(outcomes) < 2:
                     continue
 
+                # Agrupar por línea (point)
                 points = set()
                 for o in outcomes:
                     if o.get("point") is not None:
@@ -107,13 +120,16 @@ def extract_event_data(event):
 
                     odds_list = list(odds_map.values())
                     margin = market_margin(odds_list)
-                    no_vig = no_vig_probs(odds_list)
-                    no_vig_map = {name: prob for name, prob in zip(odds_map.keys(), no_vig)}
+                    no_vig_map = no_vig_probs(odds_map)
 
                     if point not in totals_data:
                         totals_data[point] = {}
 
-                    totals_data[point][book_name] = {"odds": odds_map, "margin": margin, "no_vig": no_vig_map}
+                    totals_data[point][book_name] = {
+                        "odds": odds_map,
+                        "margin": margin,
+                        "no_vig": no_vig_map,
+                    }
 
     return h2h_data, totals_data
 
@@ -122,39 +138,36 @@ def detect_signals_for_market(books_data, min_books):
     if len(books_data) < min_books:
         return []
 
-    outcome_book_probs = {}
-    outcome_odds = {}
-    outcome_margins = {}
+    # Agrupar por outcome usando el nombre como clave
+    outcome_data = {}  # outcome -> {book: {prob, odd, margin}}
 
     for book_name, data in books_data.items():
         for outcome, prob in data["no_vig"].items():
-            if outcome not in outcome_book_probs:
-                outcome_book_probs[outcome] = {}
-                outcome_odds[outcome] = {}
-                outcome_margins[outcome] = {}
+            if outcome not in outcome_data:
+                outcome_data[outcome] = {}
 
-            outcome_book_probs[outcome][book_name] = prob
-            outcome_odds[outcome][book_name] = data["odds"][outcome]
-            outcome_margins[outcome][book_name] = data["margin"]
+            outcome_data[outcome][book_name] = {
+                "prob": prob,
+                "odd": data["odds"][outcome],
+                "margin": data["margin"],
+            }
 
     signals = []
 
-    for outcome, book_probs in outcome_book_probs.items():
-        probs = list(book_probs.values())
-
-        if len(probs) < min_books:
+    for outcome, book_info in outcome_data.items():
+        if len(book_info) < min_books:
             continue
 
+        probs = [info["prob"] for info in book_info.values()]
         consensus_prob = statistics.median(probs)
         dispersion = statistics.pstdev(probs) if len(probs) > 1 else 0.0
         dispersion = max(dispersion, 0.005)
 
-        for book_name, book_prob in book_probs.items():
-            odd = outcome_odds[outcome].get(book_name)
-            margin = outcome_margins[outcome].get(book_name)
+        for book_name, info in book_info.items():
+            book_prob = info["prob"]
+            odd = info["odd"]
+            margin = info["margin"]
 
-            if odd is None or margin is None:
-                continue
             if margin > MAX_MARGIN or odd < MIN_ODDS or odd > MAX_ODDS:
                 continue
 
@@ -162,14 +175,25 @@ def detect_signals_for_market(books_data, min_books):
             ev = consensus_prob * odd - 1.0
             z_score = edge / dispersion
 
+            # Filtros
             if edge < MIN_EDGE or ev < MIN_EV or z_score < MIN_Z:
+                continue
+            
+            # NUEVO: filtro de sentido común
+            if edge > MAX_EDGE:
                 continue
 
             signals.append({
-                "book": book_name, "outcome": outcome, "odd": odd,
-                "book_prob": book_prob, "consensus_prob": consensus_prob,
-                "edge": edge, "ev": ev, "z_score": z_score,
-                "margin": margin, "books_count": len(probs),
+                "book": book_name,
+                "outcome": outcome,
+                "odd": odd,
+                "book_prob": book_prob,
+                "consensus_prob": consensus_prob,
+                "edge": edge,
+                "ev": ev,
+                "z_score": z_score,
+                "margin": margin,
+                "books_count": len(probs),
             })
 
     return signals
@@ -438,6 +462,17 @@ def main():
             sport_key = event.get("sport_key", "")
             if not sport_key.startswith("soccer_"):
                 continue
+
+            # NUEVO: filtrar eventos que empiezan en menos de MIN_MINUTES_BEFORE
+            commence_time = event.get("commence_time")
+            if commence_time:
+                try:
+                    commence_dt = datetime.fromisoformat(commence_time.replace("Z", "+00:00"))
+                    minutes_until_start = (commence_dt - now).total_seconds() / 60.0
+                    if minutes_until_start < MIN_MINUTES_BEFORE:
+                        continue  # Saltar eventos que ya han empezado o empiezan pronto
+                except Exception:
+                    pass
 
             soccer_events += 1
             event_signals = detect_all_signals(event)
