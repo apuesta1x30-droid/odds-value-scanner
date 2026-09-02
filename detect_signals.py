@@ -315,24 +315,53 @@ def send_telegram_message(token, chat_id, text):
         return False
 
 
-def check_and_send_alive_message(token, chat_id):
+def get_current_alive_hour(now_local):
+    """Devuelve la hora de estado más reciente que ya pasó hoy, o None."""
+    alive_hours = [6, 13, 20]
+    current = None
+    for h in alive_hours:
+        if now_local.hour >= h:
+            current = h
+    return current
+
+
+def check_and_send_alive_message(token, chat_id, bot_state):
+    """
+    Envia el mensaje de estado de la ventana mas reciente (6, 13 o 20),
+    una sola vez por ventana, aunque el cron se retrase.
+    """
     madrid_tz = ZoneInfo("Europe/Madrid")
     now_local = datetime.now(madrid_tz)
 
-    alive_hours = [6, 13, 20]
+    alive_hour = get_current_alive_hour(now_local)
 
-    if now_local.hour in alive_hours:
-        msg = (
-            f"✅ Bot activo.\n"
-            f"Hora: {now_local.strftime('%d/%m/%Y %H:%M')} (Madrid)\n"
-            f"He escaneado todas las ligas de fútbol disponibles "
-            f"pero no he localizado cuotas desajustadas de momento.\n"
-            f"Seguiré vigilando."
-        )
-        send_telegram_message(token, chat_id, msg)
+    if alive_hour is None:
+        print("No es hora de enviar mensaje de estado.")
+        return bot_state
+
+    # Clave unica para hoy + ventana
+    alive_key = f"{now_local.date().isoformat()}-{alive_hour}"
+
+    if bot_state.get("last_alive") == alive_key:
+        print("Mensaje de estado ya enviado para esta ventana.")
+        return bot_state
+
+    msg = (
+        f"✅ Bot activo.\n"
+        f"Hora: {now_local.strftime('%d/%m/%Y %H:%M')} (Madrid)\n"
+        f"He escaneado todas las ligas de fútbol disponibles "
+        f"pero no he localizado cuotas desajustadas de momento.\n"
+        f"Seguiré vigilando."
+    )
+
+    if send_telegram_message(token, chat_id, msg):
+        bot_state["last_alive"] = alive_key
+        save_json_file(BOT_STATE_FILE, bot_state)
         print("Mensaje de estado enviado.")
     else:
-        print("No es hora de enviar mensaje de estado.")
+        print("Error enviando mensaje de estado.")
+
+    return bot_state
 
 
 def process_telegram_commands(token, chat_id, bot_state):
