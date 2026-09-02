@@ -479,7 +479,7 @@ def main():
         events = response.json()
         if not events:
             print("No hay eventos disponibles.")
-            check_and_send_alive_message(telegram_token, telegram_chat_id)
+            check_and_send_alive_message(telegram_token, telegram_chat_id, bot_state)
             save_json_file(STATE_FILE, sent_state)
             return
 
@@ -523,7 +523,7 @@ def main():
 
     if not all_signals:
         print("No hay señales.")
-        check_and_send_alive_message(telegram_token, telegram_chat_id)
+        check_and_send_alive_message(telegram_token, telegram_chat_id, bot_state)
         save_json_file(STATE_FILE, sent_state)
         return
 
