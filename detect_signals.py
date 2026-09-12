@@ -11,8 +11,8 @@ import requests
 
 # Umbrales mínimos
 MIN_BOOKS = 4
-MIN_EDGE = 0.05
-MIN_EV = 0.05
+MIN_EDGE = 0.04
+MIN_EV = 0.04
 MIN_Z = 2.0
 MAX_MARGIN = 0.10
 MIN_ODDS = 1.30
@@ -137,11 +137,11 @@ def extract_event_data(event):
 def motivo_fallo(edge, ev, z_score):
     motivos = []
     if edge < MIN_EDGE:
-        motivos.append("edge<5%")
+        motivos.append(f"edge<{MIN_EDGE:.0%}")
     if ev < MIN_EV:
-        motivos.append("ev<5%")
+        motivos.append(f"ev<{MIN_EV:.0%}")
     if z_score < MIN_Z:
-        motivos.append("z<2.0")
+        motivos.append(f"z<{MIN_Z}")
     if not motivos:
         return "pasa"
     return ",".join(motivos)
