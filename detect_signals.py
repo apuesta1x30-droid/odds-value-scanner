@@ -17,8 +17,8 @@ MIN_Z = 2.0
 MAX_MARGIN = 0.10
 MIN_ODDS = 1.30
 MAX_ODDS = 4.00
-MAX_EDGE = 0.20  # NUEVO: edge máximo 20% (por encima es sospechoso)
-MIN_MINUTES_BEFORE = 30  # NUEVO: mínimo 30 minutos antes del inicio
+MAX_EDGE = 0.20            # Edge máximo (por encima es sospechoso)
+MIN_MINUTES_BEFORE = 30    # Mínimo 30 minutos antes del inicio
 
 # Archivos de memoria
 STATE_FILE = Path("sent_signals.json")
@@ -134,12 +134,24 @@ def extract_event_data(event):
     return h2h_data, totals_data
 
 
+def motivo_fallo(edge, ev, z_score):
+    motivos = []
+    if edge < MIN_EDGE:
+        motivos.append("edge<5%")
+    if ev < MIN_EV:
+        motivos.append("ev<5%")
+    if z_score < MIN_Z:
+        motivos.append("z<2.0")
+    if not motivos:
+        return "pasa"
+    return ",".join(motivos)
+
+
 def detect_signals_for_market(books_data, min_books):
     if len(books_data) < min_books:
-        return []
+        return [], []
 
-    # Agrupar por outcome usando el nombre como clave
-    outcome_data = {}  # outcome -> {book: {prob, odd, margin}}
+    outcome_data = {}
 
     for book_name, data in books_data.items():
         for outcome, prob in data["no_vig"].items():
@@ -153,6 +165,7 @@ def detect_signals_for_market(books_data, min_books):
             }
 
     signals = []
+    near_misses = []
 
     for outcome, book_info in outcome_data.items():
         if len(book_info) < min_books:
@@ -175,48 +188,55 @@ def detect_signals_for_market(books_data, min_books):
             ev = consensus_prob * odd - 1.0
             z_score = edge / dispersion
 
-            # Filtros
-            if edge < MIN_EDGE or ev < MIN_EV or z_score < MIN_Z:
-                continue
-            
-            # NUEVO: filtro de sentido común
-            if edge > MAX_EDGE:
+            # Señal válida
+            if MIN_EDGE <= edge <= MAX_EDGE and ev >= MIN_EV and z_score >= MIN_Z:
+                signals.append({
+                    "book": book_name, "outcome": outcome, "odd": odd,
+                    "book_prob": book_prob, "consensus_prob": consensus_prob,
+                    "edge": edge, "ev": ev, "z_score": z_score,
+                    "margin": margin, "books_count": len(probs),
+                })
                 continue
 
-            signals.append({
-                "book": book_name,
-                "outcome": outcome,
-                "odd": odd,
-                "book_prob": book_prob,
-                "consensus_prob": consensus_prob,
-                "edge": edge,
-                "ev": ev,
-                "z_score": z_score,
-                "margin": margin,
-                "books_count": len(probs),
-            })
+            # Candidato cercano (diagnóstico): positivo pero no pasa umbrales
+            if edge >= 0.02 and z_score >= 1.0:
+                near_misses.append({
+                    "book": book_name, "outcome": outcome, "odd": odd,
+                    "edge": edge, "ev": ev, "z_score": z_score,
+                    "books_count": len(probs),
+                    "motivo": motivo_fallo(edge, ev, z_score),
+                })
 
-    return signals
+    return signals, near_misses
 
 
 def detect_all_signals(event):
     h2h_data, totals_data = extract_event_data(event)
     all_signals = []
+    all_near = []
 
-    h2h_signals = detect_signals_for_market(h2h_data, MIN_BOOKS)
+    h2h_signals, h2h_near = detect_signals_for_market(h2h_data, MIN_BOOKS)
     for s in h2h_signals:
         s["market"] = "Ganador"
         s["line"] = ""
     all_signals.extend(h2h_signals)
+    for s in h2h_near:
+        s["market"] = "Ganador"
+        s["line"] = ""
+    all_near.extend(h2h_near)
 
     for point, books_data in totals_data.items():
-        totals_signals = detect_signals_for_market(books_data, MIN_BOOKS)
+        totals_signals, totals_near = detect_signals_for_market(books_data, MIN_BOOKS)
         for s in totals_signals:
             s["market"] = "Totales"
             s["line"] = f"{s['outcome']} {point}"
         all_signals.extend(totals_signals)
+        for s in totals_near:
+            s["market"] = "Totales"
+            s["line"] = f"{s['outcome']} {point}"
+        all_near.extend(totals_near)
 
-    return all_signals
+    return all_signals, all_near
 
 
 def format_date_spanish(utc_date_str):
@@ -233,7 +253,7 @@ def get_edge_icon(edge):
     if edge >= 0.15:
         return "🔥🔥"
     elif edge >= 0.10:
-        return "🔥🔥"
+        return "🔥"
     else:
         return "🔥"
 
@@ -456,6 +476,7 @@ def main():
     }
 
     all_signals = []
+    all_near = []
     total_events = 0
     soccer_events = 0
 
@@ -492,25 +513,31 @@ def main():
             if not sport_key.startswith("soccer_"):
                 continue
 
-            # NUEVO: filtrar eventos que empiezan en menos de MIN_MINUTES_BEFORE
+            # Filtrar eventos que empiezan en menos de MIN_MINUTES_BEFORE
             commence_time = event.get("commence_time")
             if commence_time:
                 try:
                     commence_dt = datetime.fromisoformat(commence_time.replace("Z", "+00:00"))
                     minutes_until_start = (commence_dt - now).total_seconds() / 60.0
                     if minutes_until_start < MIN_MINUTES_BEFORE:
-                        continue  # Saltar eventos que ya han empezado o empiezan pronto
+                        continue
                 except Exception:
                     pass
 
             soccer_events += 1
-            event_signals = detect_all_signals(event)
+            event_signals, event_near = detect_all_signals(event)
             for s in event_signals:
                 s["home_team"] = event.get("home_team", "?")
                 s["away_team"] = event.get("away_team", "?")
                 s["commence_time"] = event.get("commence_time", "?")
                 s["sport_key"] = sport_key
                 all_signals.append(s)
+            for s in event_near:
+                s["home_team"] = event.get("home_team", "?")
+                s["away_team"] = event.get("away_team", "?")
+                s["commence_time"] = event.get("commence_time", "?")
+                s["sport_key"] = sport_key
+                all_near.append(s)
 
         print(f"Eventos de fútbol procesados: {soccer_events}")
 
@@ -520,6 +547,20 @@ def main():
         return
 
     print(f"Total eventos: {total_events}")
+
+    # Diagnóstico: mostrar candidatos cercanos (solo en el log, no se envían)
+    if all_near:
+        all_near.sort(key=lambda s: s["edge"], reverse=True)
+        print(f"\nDIAGNOSTICO: {len(all_near)} candidatos cercanos (no enviados):")
+        for s in all_near[:5]:
+            print(
+                f"  {s['sport_key']} | {s['home_team']} vs {s['away_team']} | "
+                f"{s['market']} {s['line']} | {s['outcome']} @ {s['book']} | "
+                f"cuota {s['odd']:.2f} | edge {s['edge']:+.2%} | z {s['z_score']:.2f} | "
+                f"fallo: {s['motivo']}"
+            )
+    else:
+        print("\nDIAGNOSTICO: ningun candidato cercano. El mercado esta muy eficiente.")
 
     if not all_signals:
         print("No hay señales.")
