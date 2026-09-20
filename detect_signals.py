@@ -520,12 +520,12 @@ def main():
 
         # Filtrar eventos que empiezan en menos de MIN_MINUTES_BEFORE
         commence_time = event.get("commence_time")
-            if commence_time:
-                try:
-                    commence_dt = datetime.fromisoformat(commence_time.replace("Z", "+00:00"))
-                    minutes_until_start = (commence_dt - now).total_seconds() / 60.0
-                    if minutes_until_start < MIN_MINUTES_BEFORE:
-                        continue
+        if commence_time:
+            try:
+                commence_dt = datetime.fromisoformat(commence_time.replace("Z", "+00:00"))
+                minutes_until_start = (commence_dt - now).total_seconds() / 60.0
+                if minutes_until_start < MIN_MINUTES_BEFORE:
+                    continue
                 except Exception:
                     pass
 
