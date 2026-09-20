@@ -465,6 +465,8 @@ def main():
         "regions": "eu",
         "markets": "h2h,totals",
         "oddsFormat": "decimal",
+        "days_from": 0,
+        "days_to": 3,
     }
     print("Escaneando todos los deportes (endpoint upcoming)...")
     try:
