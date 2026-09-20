@@ -507,11 +507,16 @@ def main():
         total_events = len(events)
         print(f"Total eventos recibidos (todos los deportes): {total_events}")
 
-        # Filtrar solo eventos de fútbol
+        # Diagnóstico temporal: ver qué sport_keys hay
+        sport_keys_count = {}
         for event in events:
-            sport_key = event.get("sport_key", "")
-            if not sport_key.startswith("soccer_"):
-                continue
+            sk = event.get("sport_key", "unknown")
+            sport_keys_count[sk] = sport_keys_count.get(sk, 0) + 1
+        
+        print("\nSPORT KEYS RECIBIDOS:")
+        for sk, count in sorted(sport_keys_count.items(), key=lambda x: -x[1])[:10]:
+            print(f"  {sk}: {count} eventos")
+        print()
 
             # Filtrar eventos que empiezan en menos de MIN_MINUTES_BEFORE
             commence_time = event.get("commence_time")
