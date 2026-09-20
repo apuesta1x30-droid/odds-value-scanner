@@ -17,8 +17,8 @@ MIN_Z = 2.0
 MAX_MARGIN = 0.10
 MIN_ODDS = 1.30
 MAX_ODDS = 4.00
-MAX_EDGE = 0.20            # Edge máximo (por encima es sospechoso)
-MIN_MINUTES_BEFORE = 30    # Mínimo 30 minutos antes del inicio
+MAX_EDGE = 0.20
+MIN_MINUTES_BEFORE = 30
 
 # Archivos de memoria
 STATE_FILE = Path("sent_signals.json")
@@ -40,11 +40,6 @@ def save_json_file(path, data):
 
 
 def no_vig_probs(odds_map):
-    """
-    Convierte cuotas en probabilidades sin margen.
-    odds_map: {"outcome": cuota, ...}
-    Devuelve: {"outcome": prob, ...}
-    """
     inverse_sum = sum(1.0 / odds for odds in odds_map.values())
     if inverse_sum == 0:
         return {}
@@ -57,9 +52,6 @@ def market_margin(odds_list):
 
 
 def extract_event_data(event):
-    """
-    Extrae datos usando diccionarios por nombre (no por posición).
-    """
     h2h_data = {}
     totals_data = {}
 
@@ -99,7 +91,6 @@ def extract_event_data(event):
                 if len(outcomes) < 2:
                     continue
 
-                # Agrupar por línea (point)
                 points = set()
                 for o in outcomes:
                     if o.get("point") is not None:
@@ -188,7 +179,6 @@ def detect_signals_for_market(books_data, min_books):
             ev = consensus_prob * odd - 1.0
             z_score = edge / dispersion
 
-            # Señal válida
             if MIN_EDGE <= edge <= MAX_EDGE and ev >= MIN_EV and z_score >= MIN_Z:
                 signals.append({
                     "book": book_name, "outcome": outcome, "odd": odd,
@@ -198,7 +188,6 @@ def detect_signals_for_market(books_data, min_books):
                 })
                 continue
 
-            # Candidato cercano (diagnóstico): positivo pero no pasa umbrales
             if edge >= 0.02 and z_score >= 1.0:
                 near_misses.append({
                     "book": book_name, "outcome": outcome, "odd": odd,
@@ -251,7 +240,7 @@ def format_date_spanish(utc_date_str):
 
 def get_edge_icon(edge):
     if edge >= 0.15:
-        return "🔥🔥"
+        return "🔥"
     elif edge >= 0.10:
         return "🔥"
     else:
@@ -336,7 +325,6 @@ def send_telegram_message(token, chat_id, text):
 
 
 def get_current_alive_hour(now_local):
-    """Devuelve la hora de estado más reciente que ya pasó hoy, o None."""
     alive_hours = [6, 13, 20]
     current = None
     for h in alive_hours:
@@ -346,10 +334,6 @@ def get_current_alive_hour(now_local):
 
 
 def check_and_send_alive_message(token, chat_id, bot_state):
-    """
-    Envia el mensaje de estado de la ventana mas reciente (6, 13 o 20),
-    una sola vez por ventana, aunque el cron se retrase.
-    """
     madrid_tz = ZoneInfo("Europe/Madrid")
     now_local = datetime.now(madrid_tz)
 
@@ -359,7 +343,6 @@ def check_and_send_alive_message(token, chat_id, bot_state):
         print("No es hora de enviar mensaje de estado.")
         return bot_state
 
-    # Clave unica para hoy + ventana
     alive_key = f"{now_local.date().isoformat()}-{alive_hour}"
 
     if bot_state.get("last_alive") == alive_key:
@@ -445,27 +428,22 @@ def main():
         print("ERROR: Faltan variables de entorno.")
         sys.exit(1)
 
-    # 1. Cargar estado del bot
     bot_state = load_json_file(BOT_STATE_FILE, {"paused": False})
 
-    # 2. Procesar comandos de Telegram
     bot_state = process_telegram_commands(telegram_token, telegram_chat_id, bot_state)
     save_json_file(BOT_STATE_FILE, bot_state)
 
-    # 3. Comprobar si está pausado
     if bot_state.get("paused"):
         print("El bot está pausado por comando de Telegram (/stop).")
         print("No se llamará a The Odds API para no gastar créditos.")
         return
 
-    # 3.5 Comprobar horario de sueño (22:00 - 06:00 Madrid)
     madrid_tz = ZoneInfo("Europe/Madrid")
     now_local = datetime.now(madrid_tz)
     if now_local.hour >= 22 or now_local.hour < 6:
         print(f"Horario de sueño ({now_local.strftime('%H:%M')} Madrid). No se escanea.")
         return
 
-    # 4. Cargar memoria de señales enviadas
     sent_state = load_json_file(STATE_FILE, {})
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(hours=DEDUP_HOURS)
@@ -479,8 +457,8 @@ def main():
     all_near = []
     total_events = 0
     soccer_events = 0
+    soccer_descartados_tiempo = 0
 
-    # Una sola llamada al endpoint "upcoming" (todos los deportes)
     url = "https://api.the-odds-api.com/v4/sports/upcoming/odds"
     params = {
         "apiKey": api_key,
@@ -512,20 +490,26 @@ def main():
         for event in events:
             sk = event.get("sport_key", "unknown")
             sport_keys_count[sk] = sport_keys_count.get(sk, 0) + 1
-        
+
         print("\nSPORT KEYS RECIBIDOS:")
         for sk, count in sorted(sport_keys_count.items(), key=lambda x: -x[1])[:10]:
             print(f"  {sk}: {count} eventos")
         print()
 
-        # Filtrar eventos que empiezan en menos de MIN_MINUTES_BEFORE
-        commence_time = event.get("commence_time")
-        if commence_time:
-            try:
-                commence_dt = datetime.fromisoformat(commence_time.replace("Z", "+00:00"))
-                minutes_until_start = (commence_dt - now).total_seconds() / 60.0
-                if minutes_until_start < MIN_MINUTES_BEFORE:
-                    continue
+        # Filtrar solo eventos de fútbol
+        for event in events:
+            sport_key = event.get("sport_key", "")
+            if not sport_key.startswith("soccer_"):
+                continue
+
+            commence_time = event.get("commence_time")
+            if commence_time:
+                try:
+                    commence_dt = datetime.fromisoformat(commence_time.replace("Z", "+00:00"))
+                    minutes_until_start = (commence_dt - now).total_seconds() / 60.0
+                    if minutes_until_start < MIN_MINUTES_BEFORE:
+                        soccer_descartados_tiempo += 1
+                        continue
                 except Exception:
                     pass
 
@@ -545,6 +529,7 @@ def main():
                 all_near.append(s)
 
         print(f"Eventos de fútbol procesados: {soccer_events}")
+        print(f"Eventos de fútbol descartados por tiempo (<{MIN_MINUTES_BEFORE} min): {soccer_descartados_tiempo}")
 
     except Exception as e:
         print(f"Error: {e}")
@@ -553,7 +538,6 @@ def main():
 
     print(f"Total eventos: {total_events}")
 
-    # Diagnóstico: mostrar candidatos cercanos (solo en el log, no se envían)
     if all_near:
         all_near.sort(key=lambda s: s["edge"], reverse=True)
         print(f"\nDIAGNOSTICO: {len(all_near)} candidatos cercanos (no enviados):")
