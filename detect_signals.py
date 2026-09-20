@@ -518,8 +518,8 @@ def main():
             print(f"  {sk}: {count} eventos")
         print()
 
-            # Filtrar eventos que empiezan en menos de MIN_MINUTES_BEFORE
-            commence_time = event.get("commence_time")
+        # Filtrar eventos que empiezan en menos de MIN_MINUTES_BEFORE
+        commence_time = event.get("commence_time")
             if commence_time:
                 try:
                     commence_dt = datetime.fromisoformat(commence_time.replace("Z", "+00:00"))
