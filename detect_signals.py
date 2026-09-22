@@ -20,10 +20,22 @@ MAX_ODDS = 4.00
 MAX_EDGE = 0.20
 MIN_MINUTES_BEFORE = 30
 
+# Ventanas de escaneo completo (hora Madrid)
+SCAN_HOURS = [6, 13, 20]
+
 # Archivos de memoria
 STATE_FILE = Path("sent_signals.json")
 BOT_STATE_FILE = Path("bot_state.json")
 DEDUP_HOURS = 6
+
+# Ligas a escanear
+SPORT_KEYS = [
+    "soccer_epl",
+    "soccer_spain_la_liga",
+    "soccer_germany_bundesliga",
+    "soccer_france_ligue_one",
+    "soccer_italy_serie_a",
+]
 
 
 def load_json_file(path, default):
@@ -239,18 +251,14 @@ def format_date_spanish(utc_date_str):
 
 
 def get_edge_icon(edge):
-    if edge >= 0.15:
-        return "🔥"
-    elif edge >= 0.10:
-        return "🔥"
+    if edge >= 0.10:
+        return "🔥🔥"
     else:
         return "🔥"
 
 
 def get_ev_icon(ev):
-    if ev >= 0.30:
-        return "💰💰"
-    elif ev >= 0.15:
+    if ev >= 0.15:
         return "💰💰"
     else:
         return "💰"
@@ -324,10 +332,9 @@ def send_telegram_message(token, chat_id, text):
         return False
 
 
-def get_current_alive_hour(now_local):
-    alive_hours = [6, 13, 20]
+def get_current_window_hour(now_local, hours):
     current = None
-    for h in alive_hours:
+    for h in hours:
         if now_local.hour >= h:
             current = h
     return current
@@ -337,7 +344,7 @@ def check_and_send_alive_message(token, chat_id, bot_state):
     madrid_tz = ZoneInfo("Europe/Madrid")
     now_local = datetime.now(madrid_tz)
 
-    alive_hour = get_current_alive_hour(now_local)
+    alive_hour = get_current_window_hour(now_local, SCAN_HOURS)
 
     if alive_hour is None:
         print("No es hora de enviar mensaje de estado.")
@@ -352,7 +359,7 @@ def check_and_send_alive_message(token, chat_id, bot_state):
     msg = (
         f"✅ Bot activo.\n"
         f"Hora: {now_local.strftime('%d/%m/%Y %H:%M')} (Madrid)\n"
-        f"He escaneado todas las ligas de fútbol disponibles "
+        f"He escaneado las 5 ligas "
         f"pero no he localizado cuotas desajustadas de momento.\n"
         f"Seguiré vigilando."
     )
@@ -405,7 +412,7 @@ def process_telegram_commands(token, chat_id, bot_state):
             send_telegram_message(token, chat_id, "🔴 Bot PAUSADO.\nNo se gastarán créditos de la API hasta que envíes /start.")
         elif last_command == "/start":
             bot_state["paused"] = False
-            send_telegram_message(token, chat_id, "🟢 Bot REACTIVADO.\nVolveré a escanear cuotas en la próxima ejecución.")
+            send_telegram_message(token, chat_id, "🟢 Bot REACTIVADO.\nVolveré a escanear cuotas en la próxima ventana.")
         elif last_command == "/status":
             status_text = "🔴 PAUSADO" if bot_state.get("paused") else "🟢 ACTIVO"
             send_telegram_message(token, chat_id, f"Estado actual del bot: {status_text}")
@@ -440,8 +447,20 @@ def main():
 
     madrid_tz = ZoneInfo("Europe/Madrid")
     now_local = datetime.now(madrid_tz)
+
     if now_local.hour >= 22 or now_local.hour < 6:
         print(f"Horario de sueño ({now_local.strftime('%H:%M')} Madrid). No se escanea.")
+        return
+
+    # Solo escanear en las ventanas 06, 13, 20 (una vez por ventana)
+    scan_hour = get_current_window_hour(now_local, SCAN_HOURS)
+    if scan_hour is None:
+        print("Antes de la primera ventana de escaneo. Solo comandos.")
+        return
+
+    scan_key = f"{now_local.date().isoformat()}-{scan_hour}"
+    if bot_state.get("last_scan") == scan_key:
+        print(f"Ventana de escaneo {scan_hour}:00 ya procesada hoy. Solo comandos.")
         return
 
     sent_state = load_json_file(STATE_FILE, {})
@@ -459,86 +478,61 @@ def main():
     soccer_events = 0
     soccer_descartados_tiempo = 0
 
-    url = "https://api.the-odds-api.com/v4/sports/upcoming/odds"
-    params = {
-        "apiKey": api_key,
-        "regions": "eu",
-        "markets": "h2h,totals",
-        "oddsFormat": "decimal",
-        "days_from": 0,
-        "days_to": 3,
-    }
-    print("Escaneando todos los deportes (endpoint upcoming)...")
-    try:
-        response = requests.get(url, params=params, timeout=60)
-        if not response.ok:
-            print(f"ERROR: {response.status_code}")
-            print(response.text)
-            save_json_file(STATE_FILE, sent_state)
-            return
-
-        events = response.json()
-        if not events:
-            print("No hay eventos disponibles.")
-            check_and_send_alive_message(telegram_token, telegram_chat_id, bot_state)
-            save_json_file(STATE_FILE, sent_state)
-            return
-
-        total_events = len(events)
-        print(f"Total eventos recibidos (todos los deportes): {total_events}")
-
-        # Diagnóstico temporal: ver qué sport_keys hay
-        sport_keys_count = {}
-        for event in events:
-            sk = event.get("sport_key", "unknown")
-            sport_keys_count[sk] = sport_keys_count.get(sk, 0) + 1
-
-        print("\nSPORT KEYS RECIBIDOS:")
-        for sk, count in sorted(sport_keys_count.items(), key=lambda x: -x[1])[:10]:
-            print(f"  {sk}: {count} eventos")
-        print()
-
-        # Filtrar solo eventos de fútbol
-        for event in events:
-            sport_key = event.get("sport_key", "")
-            if not sport_key.startswith("soccer_"):
+    for sport_key in SPORT_KEYS:
+        url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds"
+        params = {
+            "apiKey": api_key,
+            "regions": "eu",
+            "markets": "h2h,totals",
+            "oddsFormat": "decimal",
+        }
+        print(f"Escaneando: {sport_key}")
+        try:
+            response = requests.get(url, params=params, timeout=30)
+            if not response.ok:
+                print(f"  ERROR: {response.status_code}")
                 continue
+            events = response.json()
+            if not events:
+                print("  Sin eventos.")
+                continue
+            total_events += len(events)
+            for event in events:
+                commence_time = event.get("commence_time")
+                if commence_time:
+                    try:
+                        commence_dt = datetime.fromisoformat(commence_time.replace("Z", "+00:00"))
+                        minutes_until_start = (commence_dt - now).total_seconds() / 60.0
+                        if minutes_until_start < MIN_MINUTES_BEFORE:
+                            soccer_descartados_tiempo += 1
+                            continue
+                    except Exception:
+                        pass
 
-            commence_time = event.get("commence_time")
-            if commence_time:
-                try:
-                    commence_dt = datetime.fromisoformat(commence_time.replace("Z", "+00:00"))
-                    minutes_until_start = (commence_dt - now).total_seconds() / 60.0
-                    if minutes_until_start < MIN_MINUTES_BEFORE:
-                        soccer_descartados_tiempo += 1
-                        continue
-                except Exception:
-                    pass
+                soccer_events += 1
+                event_signals, event_near = detect_all_signals(event)
+                for s in event_signals:
+                    s["home_team"] = event.get("home_team", "?")
+                    s["away_team"] = event.get("away_team", "?")
+                    s["commence_time"] = event.get("commence_time", "?")
+                    s["sport_key"] = sport_key
+                    all_signals.append(s)
+                for s in event_near:
+                    s["home_team"] = event.get("home_team", "?")
+                    s["away_team"] = event.get("away_team", "?")
+                    s["commence_time"] = event.get("commence_time", "?")
+                    s["sport_key"] = sport_key
+                    all_near.append(s)
+        except Exception as e:
+            print(f"  Error: {e}")
 
-            soccer_events += 1
-            event_signals, event_near = detect_all_signals(event)
-            for s in event_signals:
-                s["home_team"] = event.get("home_team", "?")
-                s["away_team"] = event.get("away_team", "?")
-                s["commence_time"] = event.get("commence_time", "?")
-                s["sport_key"] = sport_key
-                all_signals.append(s)
-            for s in event_near:
-                s["home_team"] = event.get("home_team", "?")
-                s["away_team"] = event.get("away_team", "?")
-                s["commence_time"] = event.get("commence_time", "?")
-                s["sport_key"] = sport_key
-                all_near.append(s)
-
-        print(f"Eventos de fútbol procesados: {soccer_events}")
-        print(f"Eventos de fútbol descartados por tiempo (<{MIN_MINUTES_BEFORE} min): {soccer_descartados_tiempo}")
-
-    except Exception as e:
-        print(f"Error: {e}")
-        save_json_file(STATE_FILE, sent_state)
-        return
-
+    print(f"Eventos de fútbol procesados: {soccer_events}")
+    print(f"Eventos de fútbol descartados por tiempo (<{MIN_MINUTES_BEFORE} min): {soccer_descartados_tiempo}")
     print(f"Total eventos: {total_events}")
+
+    # Marcar la ventana como procesada
+    bot_state["last_scan"] = scan_key
+    save_json_file(BOT_STATE_FILE, bot_state)
 
     if all_near:
         all_near.sort(key=lambda s: s["edge"], reverse=True)
