@@ -11,7 +11,7 @@ import requests
 
 # Umbrales mínimos
 MIN_BOOKS = 4
-MIN_EDGE = 0.04
+MIN_EDGE = 0.03
 MIN_EV = 0.04
 MIN_Z = 2.0
 MAX_MARGIN = 0.10
