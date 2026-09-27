@@ -556,12 +556,24 @@ def main():
     all_signals.sort(key=lambda s: s["ev"], reverse=True)
     print(f"Señales detectadas: {len(all_signals)}")
 
-    sent_count = 0
-    for i, s in enumerate(all_signals[:3], start=1):
+    # Agrupar señales duplicadas (mismo partido+mercado+seleccion, casas hermanas)
+    unique = {}
+    for s in all_signals:
         if s["market"] == "Totales":
-            signal_id = f"{s['sport_key']}|{s['home_team']}|{s['away_team']}|{s['market']}|{s['line']}|{s['book']}"
+            key = f"{s['sport_key']}|{s['home_team']}|{s['away_team']}|{s['market']}|{s['line']}|{s['outcome']}"
         else:
-            signal_id = f"{s['sport_key']}|{s['home_team']}|{s['away_team']}|{s['market']}|{s['outcome']}|{s['book']}"
+            key = f"{s['sport_key']}|{s['home_team']}|{s['away_team']}|{s['market']}|{s['outcome']}"
+        if key not in unique:
+            unique[key] = s  # al estar ordenado por EV, el primero es el mejor
+    unique_signals = list(unique.values())
+    print(f"Señales unicas tras agrupar casas hermanas: {len(unique_signals)}")
+
+    sent_count = 0
+    for i, s in enumerate(unique_signals[:3], start=1):
+        if s["market"] == "Totales":
+            signal_id = f"{s['sport_key']}|{s['home_team']}|{s['away_team']}|{s['market']}|{s['line']}|{s['outcome']}"
+        else:
+            signal_id = f"{s['sport_key']}|{s['home_team']}|{s['away_team']}|{s['market']}|{s['outcome']}"
 
         if signal_id in sent_state:
             print(f"Señal {i} ignorada (ya enviada): {signal_id}")
